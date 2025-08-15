@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "src": "/",
+      "dest": "/public/index.html"
+    },
+    {
+      "src": "/api/getMsg",
+      "dest": "/api/getMsg.js"
+    }
+  ]
+}
