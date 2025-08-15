@@ -1,32 +1,95 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>临江仙</title>
-  <style>
-    body {
-      margin: 0;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      background-color: #fff;
-      font-family: "Microsoft YaHei", sans-serif;
-    }
-    h1 {
-      font-size: 4rem;
-      font-weight: bold;
-    }
-    h2 {
-      font-size: 2rem;
-      margin-top: 0.5em;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>易码验证码接收</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            cursor: pointer;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+            min-height: 50px;
+        }
+    </style>
 </head>
 <body>
-  <h1>临江仙</h1>
-  <h2>天天开心</h2>
+    <h1>易码平台验证码接收</h1>
+    
+    <div class="input-group">
+        <label for="token">Token:</label>
+        <input type="text" id="token" placeholder="输入登录获取的token" value="2d1a049782b94ddd86c95bde1097e7ad">
+    </div>
+    
+    <div class="input-group">
+        <label for="phone">手机号:</label>
+        <input type="text" id="phone" placeholder="输入手机号">
+    </div>
+    
+    <div class="input-group">
+        <label for="keyword">关键词(可选):</label>
+        <input type="text" id="keyword" placeholder="URL" value="URL">
+    </div>
+    
+    <button onclick="getVerificationCode()">获取验证码</button>
+    
+    <div id="result"></div>
+
+    <script>
+        async function getVerificationCode() {
+            const token = document.getElementById('token').value;
+            const phone = document.getElementById('phone').value;
+            const keyword = document.getElementById('keyword').value || 'URL';
+            
+            if(!token || !phone) {
+                alert('请填写token和手机号');
+                return;
+            }
+
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '正在获取验证码...';
+            
+            try {
+                const response = await fetch(`/api/getMsg?token=${encodeURIComponent(token)}&phone=${encodeURIComponent(phone)}&keyword=${encodeURIComponent(keyword)}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP错误! 状态码: ${response.status}`);
+                }
+                
+                const data = await response.text();
+                resultDiv.innerHTML = `<strong>验证码结果:</strong><br>${data}`;
+            } catch (error) {
+                console.error('获取验证码失败:', error);
+                resultDiv.innerHTML = `<strong>错误:</strong> ${error.message}`;
+            }
+        }
+    </script>
 </body>
 </html>
