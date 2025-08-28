@@ -1,79 +1,81 @@
-// api/verify.js (Vercel Serverless Function)
-const crypto = require('crypto');
-
-// 假设你有一个有效的卡密列表（实际应用中应从数据库或持久化存储中获取）
-// 这里用Map存储卡密及其相关信息（如有效期、已使用次数等）
-const validKeys = new Map();
-validKeys.set('ljxtest', { 
-  expires: 604,800,000, // 过期时间戳（毫秒）
-  used: 0, // 已使用次数
-  maxUse: 9999999 // 最大使用次数
-}); 
-// 可以添加更多卡密
-
-// 用于生成响应
-function createResponse(statusCode, data) {
-  return {
-    statusCode,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*', // 允许Auto.js应用跨域访问
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
-    },
-    body: JSON.stringify(data)
-  };
-}
+// 首先确保没有依赖问题
+console.log('Function starting...');
 
 module.exports = async (req, res) => {
-  // 处理预检请求
-  if (req.method === 'OPTIONS') {
-    return createResponse(200, {});
-  }
+  try {
+    console.log('Request received:', req.method, req.url);
+    
+    // 设置CORS头
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Content-Type', 'application/json');
 
-  if (req.method === 'POST') {
+    // 处理预检请求
+    if (req.method === 'OPTIONS') {
+      console.log('Handling OPTIONS request');
+      return res.status(200).end();
+    }
+
+    // 只处理POST请求
+    if (req.method !== 'POST') {
+      console.log('Method not allowed:', req.method);
+      return res.status(405).json({ 
+        success: false, 
+        message: 'Method not allowed. Use POST.' 
+      });
+    }
+
+    // 解析请求体
+    let body = {};
     try {
-      const { key, action = 'verify', deviceId } = req.body;
-
-      if (!key) {
-        return createResponse(400, { success: false, message: '卡密不能为空' });
+      if (req.body) {
+        body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
       }
+    } catch (e) {
+      console.log('JSON parse error:', e.message);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid JSON format' 
+      });
+    }
 
-      // 查找卡密
-      const keyInfo = validKeys.get(key);
-      const now = Date.now();
+    const { key } = body;
+    console.log('Received key:', key);
 
-      if (!keyInfo) {
-        return createResponse(404, { success: false, message: '卡密无效' });
-      }
+    // 验证卡密
+    if (!key) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '卡密不能为空' 
+      });
+    }
 
-      // 检查卡密是否过期
-      if (keyInfo.expires && now > keyInfo.expires) {
-        return createResponse(403, { success: false, message: '卡密已过期' });
-      }
-
-      // 检查使用次数
-      if (keyInfo.maxUse && keyInfo.used >= keyInfo.maxUse) {
-        return createResponse(403, { success: false, message: '卡密使用次数已耗尽' });
-      }
-
-      // 验证成功，更新使用次数（这里需要持久化存储支持才能真正更新）
-      // validKeys.set(key, { ...keyInfo, used: keyInfo.used + 1 });
-
-      return createResponse(200, { 
+    // 简单的卡密验证（先去掉md5依赖测试）
+    const validKeys = ['ljxtest'];
+    
+    if (validKeys.includes(key.trim())) {
+      console.log('Key validation successful');
+      return res.status(200).json({ 
         success: true, 
         message: '验证成功',
-        data: {
-          expires: keyInfo.expires,
-          // 可以返回其他授权信息，如用户权限等
+        data: { 
+          expires: Date.now() + 24 * 60 * 60 * 1000 // 24小时
         }
       });
-
-    } catch (error) {
-      console.error('验证出错:', error);
-      return createResponse(500, { success: false, message: '服务器内部错误' });
+    } else {
+      console.log('Key validation failed');
+      return res.status(403).json({ 
+        success: false, 
+        message: '卡密无效' 
+      });
     }
-  } else {
-    return createResponse(405, { success: false, message: '方法不允许' });
+
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: '服务器内部错误: ' + error.message 
+    });
   }
 };
