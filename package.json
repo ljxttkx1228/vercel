@@ -8,3 +8,17 @@
     "axios": "^0.27.2"
   }
 }
+{
+  "name": "my-autojs-auth",
+  "version": "1.0.0",
+  "description": "Auto.js卡密验证API",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "md5": "^2.3.0"
+  },
+  "devDependencies": {
+    "vercel": "^28.0.0"
+  }
+}
