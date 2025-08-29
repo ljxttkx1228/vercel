@@ -9,16 +9,10 @@
   }
 }
 {
-  "name": "my-autojs-auth",
+  "name": "my-vercel-app",
   "version": "1.0.0",
-  "description": "Auto.js卡密验证API",
+  "main": "index.js",
   "scripts": {
-    "dev": "vercel dev"
-  },
-  "dependencies": {
-    "md5": "^2.3.0"
-  },
-  "devDependencies": {
-    "vercel": "^28.0.0"
+    "start": "vercel dev"
   }
 }
