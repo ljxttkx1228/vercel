@@ -1,18 +1,12 @@
 {
   "name": "yima-vercel-app",
   "version": "1.0.0",
+  "main": "api/addAuth.js",
+  "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node api/addAuth.js"
   },
   "dependencies": {
-    "axios": "^0.27.2"
-  }
-}
-{
-  "name": "my-vercel-app",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "start": "vercel dev"
+    "node-fetch": "^3.3.2"
   }
 }
