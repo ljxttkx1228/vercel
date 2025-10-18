@@ -3,7 +3,10 @@
   "routes": [
     {
       "src": "/",
-      "dest": "/public/index.html"
+      "dest": "/api/script.js",
+      "headers": {
+        "Content-Type": "text/plain"
+      }
     },
     {
       "src": "/api/getMsg",
