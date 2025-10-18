@@ -1,0 +1,1714 @@
+module.exports = (req, res) => {
+  const luaScript = `local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local VirtualUser = game:GetService("VirtualUser")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local lastWebhookUrl = ""
+local lastSendTime = os.time()
+local DEBUG_MODE = false
+
+local function debugLog(...)
+    if DEBUG_MODE then
+        print(...)
+    end
+end
+
+local UILibrary
+local success, result = pcall(function()
+    local url = "https://raw.githubusercontent.com/TongScriptX/Pluto/refs/heads/main/Pluto/UILibrary/PlutoUILibrary.lua"
+    local source = game:HttpGet(url)
+    return loadstring(source)()
+end)
+
+if success and result then
+    UILibrary = result
+else
+    error("[MoonUILibrary] 加载失败！请检查网络连接或链接是否有效：" .. tostring(result))
+end
+
+local player = Players.LocalPlayer
+if not player then
+    error("无法获取当前玩家")
+end
+local userId = player.UserId
+local username = player.Name
+
+local http_request = syn and syn.request or http and http.request or http_request
+if not http_request then
+    error("此执行器不支持 HTTP 请求")
+end
+
+local configFile = "Moon_X_DE_config.json"
+local config = {
+    webhookUrl = "",
+    notifyCash = false,
+    notifyLeaderboard = false,
+    leaderboardKick = false,
+    notificationInterval = 30,
+    welcomeSent = false,
+    targetAmount = 0,
+    enableTargetKick = false,
+    lastSavedCurrency = 0,
+    baseAmount = 0,
+    onlineRewardEnabled = false,
+    autoSpawnVehicleEnabled = false,
+    totalEarningsBase = 0,
+    lastNotifyCurrency = 0,
+}
+
+_G.PRIMARY_COLOR = 5793266
+
+local gameName = "未知游戏"
+local success, info = pcall(function()
+    return MarketplaceService:GetProductInfo(game.PlaceId)
+end)
+if success and info then
+    gameName = info.Name
+end
+
+local initialCurrency = 0
+local function fetchCurrentCurrency()
+    local leaderstats = player:WaitForChild("leaderstats", 5)
+    if leaderstats then
+        local currency = leaderstats:FindFirstChild("Cash")
+        if currency then
+            return currency.Value
+        end
+    end
+    UILibrary:Notify({ Title = "错误", Text = "无法找到排行榜或金额数据", Duration = 5 })
+    return nil
+end
+
+local function calculateEarnedAmount(currentCurrency)
+    if not currentCurrency then return 0 end
+    if config.totalEarningsBase > 0 then
+        return currentCurrency - config.totalEarningsBase
+    else
+        return currentCurrency - initialCurrency
+    end
+end
+
+local function calculateChangeAmount(currentCurrency)
+    if not currentCurrency then return 0 end
+    if config.lastNotifyCurrency > 0 then
+        return currentCurrency - config.lastNotifyCurrency
+    else
+        return calculateEarnedAmount(currentCurrency)
+    end
+end
+
+local success, currencyValue = pcall(fetchCurrentCurrency)
+if success and currencyValue then
+    initialCurrency = currencyValue
+    if config.totalEarningsBase == 0 then
+        config.totalEarningsBase = currencyValue
+    end
+    if config.lastNotifyCurrency == 0 then
+        config.lastNotifyCurrency = currencyValue
+    end
+    UILibrary:Notify({ Title = "初始化成功", Text = "当前金额: " .. tostring(initialCurrency), Duration = 5 })
+end
+
+player.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+    UILibrary:Notify({ Title = "反挂机", Text = "检测到闲置，已自动操作", Duration = 3 })
+end)
+
+local function saveConfig()
+    pcall(function()
+        local allConfigs = {}
+        if isfile(configFile) then
+            local ok, content = pcall(function()
+                return HttpService:JSONDecode(readfile(configFile))
+            end)
+            if ok and type(content) == "table" then
+                allConfigs = content
+            end
+        end
+
+        allConfigs[username] = config
+        writefile(configFile, HttpService:JSONEncode(allConfigs))
+
+        UILibrary:Notify({
+            Title = "配置已保存",
+            Text = "配置已保存至 " .. configFile,
+            Duration = 5,
+        })
+    end)
+end
+
+local performAutoSpawnVehicle
+
+local function fetchVehicleStatsConcurrent(vehicleNames, GetVehicleStats)
+    local results = {}
+    local threads = {}
+    
+    for _, vehicleName in ipairs(vehicleNames) do
+        local thread = coroutine.create(function()
+            local success, result = pcall(function()
+                return GetVehicleStats:InvokeServer(vehicleName)
+            end)
+            
+            if success and type(result) == "table" and result.Generic_TopSpeed then
+                results[vehicleName] = {
+                    name = vehicleName,
+                    speed = result.Generic_TopSpeed
+                }
+            end
+        end)
+        table.insert(threads, thread)
+    end
+    
+    for _, thread in ipairs(threads) do
+        coroutine.resume(thread)
+    end
+    
+    local completed = 0
+    local maxWait = 50
+    local waitCount = 0
+    
+    while completed < #threads and waitCount < maxWait do
+        completed = 0
+        for _, thread in ipairs(threads) do
+            if coroutine.status(thread) == "dead" then
+                completed = completed + 1
+            end
+        end
+        
+        if completed < #threads then
+            wait(0.1)
+            waitCount = waitCount + 1
+        end
+    end
+    
+    return results
+end
+
+local function findFastestVehicleFast(vehiclesFolder, GetVehicleStats)
+    local ownedVehicles = {}
+    local vehicleCount = 0
+    
+    for _, vehicleValue in pairs(vehiclesFolder:GetChildren()) do
+        if vehicleValue:IsA("BoolValue") and vehicleValue.Value == true then
+            table.insert(ownedVehicles, vehicleValue.Name)
+            vehicleCount = vehicleCount + 1
+        end
+    end
+    
+    if #ownedVehicles == 0 then
+        return nil, -1, vehicleCount
+    end
+    
+    debugLog("[AutoSpawnVehicle] 找到", vehicleCount, "辆拥有的车辆，开始并发获取数据...")
+    
+    local vehicleData = fetchVehicleStatsConcurrent(ownedVehicles, GetVehicleStats)
+    
+    local fastestName, fastestSpeed = nil, -1
+    for _, data in pairs(vehicleData) do
+        if data.speed > fastestSpeed then
+            fastestSpeed = data.speed
+            fastestName = data.name
+        end
+    end
+    
+    return fastestName, fastestSpeed, vehicleCount
+end
+
+performAutoSpawnVehicle = function()
+    if not config.autoSpawnVehicleEnabled then
+        debugLog("[AutoSpawnVehicle] 功能未启用，跳过生成")
+        return
+    end
+
+    debugLog("[AutoSpawnVehicle] 开始执行车辆生成...")
+    local startTime = tick()
+
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then
+        warn("[AutoSpawnVehicle] 无法获取本地玩家")
+        return
+    end
+
+    if not ReplicatedStorage then
+        warn("[AutoSpawnVehicle] ReplicatedStorage 不可用")
+        return
+    end
+
+    local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
+    if not remotesFolder then
+        warn("[AutoSpawnVehicle] 未找到 Remotes 文件夹")
+        return
+    end
+
+    local GetVehicleStats = remotesFolder:FindFirstChild("GetVehicleStats")
+    local VehicleEvent = remotesFolder:FindFirstChild("VehicleEvent")
+    if not GetVehicleStats then
+        warn("[AutoSpawnVehicle] 未找到 GetVehicleStats")
+        return
+    end
+    if not VehicleEvent then
+        warn("[AutoSpawnVehicle] 未找到 VehicleEvent")
+        return
+    end
+
+    local playerGui = localPlayer.PlayerGui or localPlayer:WaitForChild("PlayerGui", 5)
+    if not playerGui then
+        warn("[AutoSpawnVehicle] PlayerGui 获取失败")
+        return
+    end
+
+    local statsPanel = playerGui:FindFirstChild(localPlayer.Name .. "'s Stats")
+    if not statsPanel then
+        warn("[AutoSpawnVehicle] 未找到玩家 Stats 面板")
+        return
+    end
+
+    local vehiclesFolder = statsPanel:FindFirstChild("Vehicles")
+    if not vehiclesFolder then
+        warn("[AutoSpawnVehicle] 未找到 Vehicles 文件夹")
+        return
+    end
+
+    local fastestName, fastestSpeed, vehicleCount = findFastestVehicleFast(vehiclesFolder, GetVehicleStats)
+    
+    local searchTime = tick() - startTime
+    debugLog("[AutoSpawnVehicle] 搜索完成，耗时:", string.format("%.2f", searchTime), "秒")
+    debugLog("[AutoSpawnVehicle] 拥有车辆数:", vehicleCount, "最快车辆:", fastestName, "速度:", fastestSpeed)
+
+    if fastestName and fastestSpeed > 0 then
+        local success, err = pcall(function()
+            VehicleEvent:FireServer("Spawn", fastestName)
+        end)
+        
+        if success then
+            UILibrary:Notify({
+                Title = "自动生成",
+                Text = string.format("已生成最快车辆: %s (速度: %s) 耗时: %.2fs", 
+                    fastestName, tostring(fastestSpeed), searchTime),
+                Duration = 5
+            })
+            debugLog("[AutoSpawnVehicle] 成功生成车辆:", fastestName)
+        else
+            warn("[AutoSpawnVehicle] 生成车辆时出错:", err)
+            UILibrary:Notify({
+                Title = "自动生成",
+                Text = "生成车辆失败: " .. tostring(err),
+                Duration = 5
+            })
+        end
+    else
+        warn("[AutoSpawnVehicle] 未找到有效车辆数据")
+        UILibrary:Notify({
+            Title = "自动生成",
+            Text = "未找到可生成的车辆",
+            Duration = 5
+        })
+    end
+end
+
+local function adjustTargetAmount()
+    if config.baseAmount <= 0 or config.targetAmount <= 0 then
+        return
+    end
+    
+    local currentCurrency = fetchCurrentCurrency()
+    if not currentCurrency then
+        return
+    end
+    
+    local currencyDifference = currentCurrency - config.lastSavedCurrency
+    
+    if currencyDifference ~= 0 then
+        local newTargetAmount = config.targetAmount + currencyDifference
+        
+        if newTargetAmount > currentCurrency then
+            config.targetAmount = newTargetAmount
+            UILibrary:Notify({
+                Title = "目标金额已调整",
+                Text = string.format("根据金额变化调整目标金额至: %s", formatNumber(config.targetAmount)),
+                Duration = 5
+            })
+            saveConfig()
+        else
+            config.enableTargetKick = false
+            config.targetAmount = 0
+            UILibrary:Notify({
+                Title = "目标金额已重置",
+                Text = "调整后的目标金额小于当前金额，已禁用目标踢出功能",
+                Duration = 5
+            })
+            saveConfig()
+        end
+    end
+end
+
+local function loadConfig()
+    if isfile(configFile) then
+        local success, result = pcall(function()
+            return HttpService:JSONDecode(readfile(configFile))
+        end)
+        if success and type(result) == "table" then
+            local userConfig = result[username]
+            if userConfig and type(userConfig) == "table" then
+                for k, v in pairs(userConfig) do
+                    config[k] = v
+                end
+                UILibrary:Notify({
+                    Title = "配置已加载",
+                    Text = "用户配置加载成功",
+                    Duration = 5,
+                })
+                
+                adjustTargetAmount()
+            else
+                UILibrary:Notify({
+                    Title = "配置提示",
+                    Text = "未找到该用户配置，使用默认配置",
+                    Duration = 5,
+                })
+                saveConfig()
+            end
+        else
+            UILibrary:Notify({
+                Title = "配置错误",
+                Text = "无法解析配置文件",
+                Duration = 5,
+            })
+            saveConfig()
+        end
+    else
+        UILibrary:Notify({
+            Title = "配置提示",
+            Text = "未找到配置文件，创建新文件",
+            Duration = 5,
+        })
+        saveConfig()
+    end
+    
+    if config.webhookUrl ~= "" and config.webhookUrl ~= lastWebhookUrl then
+        config.welcomeSent = false
+        sendWelcomeMessage()
+        lastWebhookUrl = config.webhookUrl
+    end
+
+    if config.autoSpawnVehicleEnabled then
+        debugLog("[AutoSpawnVehicle] 配置为开启状态，准备启动...")
+        spawn(function()
+            if not game:IsLoaded() then
+                game.Loaded:Wait()
+            end
+            task.wait(5)
+            
+            debugLog("[AutoSpawnVehicle] 开始尝试生成车辆...")
+            
+            if performAutoSpawnVehicle and type(performAutoSpawnVehicle) == "function" then
+                local success, err = pcall(performAutoSpawnVehicle)
+                if not success then
+                    warn("[AutoSpawnVehicle] 启动时生成车辆失败:", err)
+                    UILibrary:Notify({
+                        Title = "自动刷车",
+                        Text = "启动时生成失败: " .. tostring(err),
+                        Duration = 5
+                    })
+                end
+            else
+                warn("[AutoSpawnVehicle] performAutoSpawnVehicle 函数未定义")
+                UILibrary:Notify({
+                    Title = "自动刷车",
+                    Text = "函数未准备就绪",
+                    Duration = 5
+                })
+            end
+        end)
+    end
+end
+
+local function getNotificationIntervalSeconds()
+    return (config.notificationInterval or 5) * 60
+end
+
+local originalCFrame, tempPlatform
+
+local function tryGetContents(timeout)
+    local ok, result = pcall(function()
+        local root = workspace:WaitForChild("Game", timeout or 2)
+            :WaitForChild("Leaderboards", timeout or 2)
+            :WaitForChild("weekly_money", timeout or 2)
+            :WaitForChild("Screen", timeout or 2)
+            :WaitForChild("Leaderboard", timeout or 2)
+        return root:WaitForChild("Contents", timeout or 2)
+    end)
+    return ok and result or nil
+end
+
+local function getSafeTeleportCFrame()
+    local board = workspace:FindFirstChild("Game")
+        and workspace.Game:FindFirstChild("Leaderboards")
+        and workspace.Game.Leaderboards:FindFirstChild("weekly_money")
+    if not board then return nil end
+    local pivot = board:GetPivot()
+    return pivot + Vector3.new(0, 30, 0)
+end
+
+local function spawnPlatform(atCFrame)
+    tempPlatform = Instance.new("Part", workspace)
+    tempPlatform.Name = "TempPlatform"
+    tempPlatform.Anchored = true
+    tempPlatform.CanCollide = true
+    tempPlatform.Transparency = 1
+    tempPlatform.Size = Vector3.new(100, 1, 100)
+    tempPlatform.CFrame = atCFrame * CFrame.new(0, -5, 0)
+end
+
+local function teleportTo(cframe)
+    if not originalCFrame and player.Character and player.Character.PrimaryPart then
+        originalCFrame = player.Character.PrimaryPart.CFrame
+    end
+    local vehicles = workspace:FindFirstChild("Vehicles")
+    local vehicle = vehicles and vehicles:FindFirstChild(username)
+    local seat = vehicle and vehicle:FindFirstChildWhichIsA("VehicleSeat", true)
+    if seat and vehicle then
+        vehicle:PivotTo(cframe)
+    elseif player.Character and player.Character.PrimaryPart then
+        player.Character:SetPrimaryPartCFrame(cframe)
+    end
+end
+
+local function cleanup()
+    if tempPlatform then
+        if tempPlatform.Parent then
+            tempPlatform:Destroy()
+        end
+        tempPlatform = nil
+    end
+    if originalCFrame then
+        local vehicles = workspace:FindFirstChild("Vehicles")
+        local vehicle = vehicles and vehicles:FindFirstChild(username)
+        local seat = vehicle and vehicle:FindFirstChildWhichIsA("VehicleSeat", true)
+        if seat and vehicle then
+            vehicle:PivotTo(originalCFrame)
+        elseif player.Character and player.Character.PrimaryPart then
+            player.Character:SetPrimaryPartCFrame(originalCFrame)
+        end
+        originalCFrame = nil
+    end
+end
+
+function fetchPlayerRank()
+    local contents = tryGetContents(2)
+    if not contents then
+        local cframe = getSafeTeleportCFrame()
+        if not cframe then return nil, false end
+        teleportTo(cframe)
+        spawnPlatform(cframe)
+        wait(2)
+        contents = tryGetContents(2)
+        cleanup()
+    end
+    if not contents then return nil, false end
+
+    local rank = 1
+    local isOnLeaderboard = false
+    for _, child in ipairs(contents:GetChildren()) do
+        if tonumber(child.Name) == userId or child.Name == username then
+            local placement = child:FindFirstChild("Placement")
+            isOnLeaderboard = true
+            return placement and placement:IsA("IntValue") and placement.Value or rank, true
+        end
+        rank = rank + 1
+    end
+    return nil, false
+end
+
+local function getNextNotificationTime()
+    local currentTime = os.time()
+    local intervalSeconds = config.notificationInterval * 60
+    return os.date("%Y-%m-%d %H:%M:%S", currentTime + intervalSeconds)
+end
+
+local function formatNumber(num)
+    local formatted = tostring(num)
+    local result = ""
+    local count = 0
+    for i = #formatted, 1, -1 do
+        result = formatted:sub(i, i) .. result
+        count = count + 1
+        if count % 3 == 0 and i > 1 then
+            result = "," .. result
+        end
+    end
+    return result
+end
+
+local function dispatchWebhook(payload)
+    if config.webhookUrl == "" then
+        UILibrary:Notify({
+            Title = "Webhook 错误",
+            Text = "请先设置 Webhook 地址",
+            Duration = 5
+        })
+        warn("[Webhook] 未设置 webhookUrl")
+        return false
+    end
+
+    local requestFunc = syn and syn.request or http and http.request or request
+    if not requestFunc then
+        UILibrary:Notify({
+            Title = "Webhook 错误",
+            Text = "无法找到可用的请求函数，请使用支持 HTTP 请求的执行器",
+            Duration = 5
+        })
+        warn("[Webhook] 无可用请求函数")
+        return false
+    end
+
+    local url = config.webhookUrl
+    
+    local bodyJson = HttpService:JSONEncode({
+        content = nil,
+        embeds = payload.embeds
+    })
+
+    local success, res = pcall(function()
+        return requestFunc({
+            Url = url,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = bodyJson
+        })
+    end)
+
+    if success and res then
+        if res.StatusCode == 204 or res.StatusCode == 200 then
+            UILibrary:Notify({
+                Title = "Webhook",
+                Text = "Webhook 发送成功",
+                Duration = 5
+            })
+            print("[Webhook] 发送成功")
+            return true
+        else
+            warn("[Webhook 错误] 状态码: " .. tostring(res.StatusCode or "未知") .. ", 返回: " .. (res.Body or "无"))
+            UILibrary:Notify({
+                Title = "Webhook 错误",
+                Text = "状态码: " .. tostring(res.StatusCode or "未知") .. "\n返回信息: " .. (res.Body or "无"),
+                Duration = 5
+            })
+            return false
+        end
+    else
+        warn("[Webhook 请求失败] 错误信息: " .. tostring(res))
+        UILibrary:Notify({
+            Title = "Webhook 错误",
+            Text = "请求失败: " .. tostring(res),
+            Duration = 5
+        })
+        return false
+    end
+end
+
+local function sendWelcomeMessage()
+    if config.webhookUrl == "" then
+        UILibrary:Notify({ Title = "Webhook 错误", Text = "请先设置 Webhook 地址", Duration = 5 })
+        return
+    end
+    local payload = {
+        embeds = {{
+            title = "欢迎使用Moon-X",
+            description = "**游戏**: " .. gameName .. "\n**用户**: " .. username,
+            color = PRIMARY_COLOR,
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            footer = { text = "作者: Lin · Moon-X" }
+        }}
+    }
+    if dispatchWebhook(payload) then
+        config.welcomeSent = true
+        saveConfig()
+    end
+end
+
+local function initTargetAmount()
+    local currentCurrency = fetchCurrentCurrency() or 0
+    
+    if config.enableTargetKick and config.targetAmount > 0 and currentCurrency >= config.targetAmount then
+        UILibrary:Notify({
+            Title = "目标金额已达成",
+            Text = string.format("当前金额 %s，已超过目标 %s，已关闭踢出功能", 
+                formatNumber(currentCurrency), formatNumber(config.targetAmount)),
+            Duration = 5
+        })
+        config.enableTargetKick = false
+        config.targetAmount = 0
+        saveConfig()
+    end
+end
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local function findRewardsRoot()
+    local ok, gui = pcall(function()
+        return player:WaitForChild("PlayerGui", 2)
+    end)
+    if not ok or not gui then
+        return nil
+    end
+
+    do
+        local success, result = pcall(function()
+            local dailyQuests = gui:FindFirstChild("DailyQuests")
+            if dailyQuests then
+                local dailyChallenges = dailyQuests:FindFirstChild("DailyChallenges")
+                if dailyChallenges and dailyChallenges:FindFirstChild("holder") and dailyChallenges.holder:FindFirstChild("PlaytimeRewards") then
+                    local pr = dailyChallenges.holder.PlaytimeRewards
+                    if pr and pr:FindFirstChild("RewardsList") and pr.RewardsList:FindFirstChild("SmallRewards") then
+                        return pr.RewardsList.SmallRewards
+                    end
+                end
+            end
+            return nil
+        end)
+        if success and result then
+            return result
+        end
+    end
+
+    do
+        for _, child in ipairs(gui:GetChildren()) do
+            if child:IsA("ScreenGui") or child:IsA("Frame") then
+                if child.Name == "PlaytimeRewardsFrame" or child.Name:find("PlaytimeRewards") then
+                    local rl = child:FindFirstChild("RewardsList")
+                    if rl and rl:FindFirstChild("SmallRewards") then
+                        return rl.SmallRewards
+                    end
+                end
+                local rl2 = child:FindFirstChild("RewardsList", true)
+                if rl2 and rl2:FindFirstChild("SmallRewards") then
+                    return rl2.SmallRewards
+                end
+            end
+        end
+    end
+
+    do
+        local success, result = pcall(function()
+            local mainHUD = gui:FindFirstChild("MainHUD")
+            if mainHUD then
+                local dailyChallenges = mainHUD:FindFirstChild("DailyChallenges")
+                if dailyChallenges and dailyChallenges:FindFirstChild("holder") and dailyChallenges.holder:FindFirstChild("PlaytimeRewards") then
+                    local pr = dailyChallenges.holder.PlaytimeRewards
+                    if pr and pr:FindFirstChild("RewardsList") and pr.RewardsList:FindFirstChild("SmallRewards") then
+                        return pr.RewardsList.SmallRewards
+                    end
+                end
+            end
+            return nil
+        end)
+        if success and result then
+            return result
+        end
+    end
+
+    do
+        for _, child in ipairs(gui:GetDescendants()) do
+            if child:IsA("Frame") and child.Name == "SmallRewards" then
+                if child.Parent and child.Parent.Name == "RewardsList" then
+                    return child
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function claimPlaytimeRewards()
+    if not config.onlineRewardEnabled then
+        debugLog("[PlaytimeRewards] 在线时长奖励功能未启用")
+        return
+    end
+
+    spawn(function()
+        local rewardCheckInterval = 600
+
+        while config.onlineRewardEnabled do
+            if not game:IsLoaded() then
+                game.Loaded:Wait()
+            end
+
+            local gui = player:FindFirstChild("PlayerGui")
+            if not gui then
+                gui = player:WaitForChild("PlayerGui", 5)
+            end
+
+            local rewardsRoot = findRewardsRoot()
+
+            if not rewardsRoot then
+                UILibrary:Notify({
+                    Title = "领取失败",
+                    Text = "无法找到奖励界面（尝试多种查找策略失败）",
+                    Duration = 5
+                })
+                warn("[PlaytimeRewards] 未找到奖励界面（findRewardsRoot 返回 nil）")
+                task.wait(rewardCheckInterval)
+                continue
+            end
+
+            local statsGui
+            for _, v in ipairs(gui:GetChildren()) do
+                if v:IsA("ScreenGui") and v.Name:find("'s Stats") then
+                    statsGui = v
+                    break
+                end
+            end
+
+            if not statsGui then
+                UILibrary:Notify({
+                    Title = "领取失败",
+                    Text = "未找到玩家 Stats",
+                    Duration = 5
+                })
+                warn("[PlaytimeRewards] 未找到玩家 Stats")
+                task.wait(rewardCheckInterval)
+                continue
+            end
+
+            local claimedList = {}
+            local claimedRaw = statsGui:FindFirstChild("ClaimedPlayTimeRewards")
+            if claimedRaw and claimedRaw:IsA("StringValue") then
+                local ok, parsed = pcall(function()
+                    return HttpService:JSONDecode(claimedRaw.Value)
+                end)
+                if ok and typeof(parsed) == "table" then
+                    for k, v in pairs(parsed) do
+                        claimedList[tonumber(k)] = v
+                    end
+                else
+                    UILibrary:Notify({
+                        Title = "领取失败",
+                        Text = "ClaimedPlayTimeRewards JSON 解析失败",
+                        Duration = 5
+                    })
+                    warn("[PlaytimeRewards] JSON 解析失败")
+                    task.wait(rewardCheckInterval)
+                    continue
+                end
+            else
+                warn("[PlaytimeRewards] 未找到 ClaimedPlayTimeRewards")
+            end
+
+            local allClaimed = true
+            for i = 1, 7 do
+                if not claimedList[i] then
+                    allClaimed = false
+                    break
+                end
+            end
+
+            if allClaimed then
+                UILibrary:Notify({
+                    Title = "奖励状态",
+                    Text = "所有在线时长奖励已领取，等待重置",
+                    Duration = 5
+                })
+                debugLog("[PlaytimeRewards] 所有奖励已领取，等待重置")
+                task.wait(rewardCheckInterval)
+                continue
+            end
+
+            local remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
+            local uiInteraction = remotes and remotes:FindFirstChild("UIInteraction")
+            local playRewards = remotes and remotes:FindFirstChild("PlayRewards")
+
+            if not uiInteraction or not playRewards then
+                UILibrary:Notify({
+                    Title = "领取失败",
+                    Text = "未找到远程事件 UIInteraction 或 PlayRewards",
+                    Duration = 5
+                })
+                warn("[PlaytimeRewards] 未找到远程事件")
+                task.wait(rewardCheckInterval)
+                continue
+            end
+
+            local ok2, rewardsConfig = pcall(function()
+                return remotes:WaitForChild("GetRemoteConfigPath"):InvokeServer("driving-empire", "PlaytimeRewards")
+            end)
+            if not ok2 or type(rewardsConfig) ~= "table" then
+                warn("[PlaytimeRewards] 获取奖励配置失败")
+                rewardsConfig = {}
+            end
+
+            local function findReward7()
+                for _, child in ipairs(rewardsRoot:GetChildren()) do
+                    if tonumber(child.Name) == 7 then
+                        return child
+                    end
+                end
+                return nil
+            end
+
+            for i = 1, 7 do
+                debugLog("----------------------------------------")
+                local rewardItem = rewardsRoot:FindFirstChild(tostring(i))
+                if i == 7 and not rewardItem then
+                    rewardItem = findReward7()
+                end
+
+                local amountText = "未知"
+                local stateText = "未知"
+                local canClaim = false
+                local alreadyClaimed = claimedList[i] == true
+
+                if rewardItem then
+                    local holder = rewardItem:FindFirstChild("Holder")
+                    local amountBtnText = holder and holder:FindFirstChild("Amount")
+                    if amountBtnText and amountBtnText:FindFirstChild("ButtonText") then
+                        amountText = amountBtnText.ButtonText.Text
+                    end
+
+                    local collect = holder and holder:FindFirstChild("Collect")
+                    if collect and collect.Visible and not alreadyClaimed then
+                        canClaim = true
+                    end
+
+                    if alreadyClaimed then
+                        stateText = "已领取"
+                    elseif canClaim then
+                        stateText = "可领取"
+                    else
+                        stateText = "未达成"
+                    end
+                else
+                    local cfg = rewardsConfig[i]
+                    if cfg then
+                        amountText = tostring(cfg.Amount or cfg.Name or "未知")
+                    end
+
+                    if not alreadyClaimed and i == 7 then
+                        canClaim = true
+                        stateText = "尝试领取（缺少 GUI）"
+                    else
+                        stateText = alreadyClaimed and "已领取" or "未达成"
+                    end
+                end
+
+                debugLog("[PlaytimeRewards] 奖励 " .. i .. " 按钮文字：" .. amountText)
+                debugLog("[PlaytimeRewards] 奖励 " .. i .. " 状态：" .. stateText)
+
+                if canClaim then
+                    local okClaim, err = pcall(function()
+                        uiInteraction:FireServer({action = "PlaytimeRewards", rewardId = i})
+                        task.wait(0.2)
+                        playRewards:FireServer(i, false)
+                        UILibrary:Notify({
+                            Title = "奖励领取",
+                            Text = "已尝试领取奖励 ID: " .. i .. " (" .. amountText .. ")",
+                            Duration = 5
+                        })
+                        debugLog("[PlaytimeRewards] ✅ 已尝试领取奖励 ID:", i)
+                    end)
+                    if not okClaim then
+                        UILibrary:Notify({
+                            Title = "领取失败",
+                            Text = "奖励 ID: " .. i .. " 领取出错: " .. tostring(err),
+                            Duration = 5
+                        })
+                        warn("[PlaytimeRewards] 领取奖励 ID:", i, "失败:", err)
+                    end
+                    task.wait(0.4)
+                end
+            end
+
+            debugLog("[PlaytimeRewards] 已完成一次领取尝试，下次检查时间: ", os.date("%Y-%m-%d %H:%M:%S", os.time() + rewardCheckInterval))
+            task.wait(rewardCheckInterval)
+        end
+
+        debugLog("[PlaytimeRewards] 在线时长奖励功能已关闭，停止领取循环")
+    end)
+end
+
+pcall(initTargetAmount)
+pcall(loadConfig)
+
+local window = UILibrary:CreateUIWindow()
+if not window then
+    error("无法创建 UI 窗口")
+end
+local mainFrame = window.MainFrame
+local screenGui = window.ScreenGui
+local sidebar = window.Sidebar
+local titleLabel = window.TitleLabel
+local mainPage = window.MainPage
+
+local toggleButton = UILibrary:CreateFloatingButton(screenGui, {
+    MainFrame = mainFrame,
+    Text = "菜单"
+})
+if not toggleButton then
+    error("无法创建悬浮按钮")
+end
+
+local generalTab, generalContent = UILibrary:CreateTab(sidebar, titleLabel, mainPage, {
+    Text = "常规",
+    Active = true
+})
+
+local generalCard = UILibrary:CreateCard(generalContent, { IsMultiElement = true })
+local gameLabel = UILibrary:CreateLabel(generalCard, {
+    Text = "游戏: " .. gameName,
+})
+local earnedCurrencyLabel = UILibrary:CreateLabel(generalCard, {
+    Text = "已赚金额: 0",
+})
+
+local antiAfkCard = UILibrary:CreateCard(generalContent)
+local antiAfkLabel = UILibrary:CreateLabel(antiAfkCard, {
+    Text = "反挂机已启用",
+})
+
+local mainFeatureTab, mainFeatureContent = UILibrary:CreateTab(sidebar, titleLabel, mainPage, {
+    Text = "主要功能",
+    Active = false
+})
+
+local onlineRewardCard = UILibrary:CreateCard(mainFeatureContent)
+
+local toggleOnlineReward = UILibrary:CreateToggle(onlineRewardCard, {
+    Text = "在线时长奖励",
+    DefaultState = config.onlineRewardEnabled,
+    Callback = function(state)
+        config.onlineRewardEnabled = state
+        UILibrary:Notify({
+            Title = "配置更新",
+            Text = "在线时长奖励: " .. (state and "开启"或"关闭"),
+            Duration = 5
+        })
+        saveConfig()
+        if state then
+            claimPlaytimeRewards()
+        end
+        debugLog("在线时长奖励开关状态:", state)
+    end
+})
+
+debugLog("在线时长奖励开关创建:", toggleOnlineReward.Parent and "父对象存在" or "无父对象")
+if config.onlineRewardEnabled then
+    debugLog("[PlaytimeRewards] 配置为开启状态，尝试启动...")
+    claimPlaytimeRewards()
+end
+
+local autoSpawnVehicleCard = UILibrary:CreateCard(mainFeatureContent)
+local toggleAutoSpawnVehicle = UILibrary:CreateToggle(autoSpawnVehicleCard, {
+    Text = "自动生成车辆",
+    DefaultState = config.autoSpawnVehicleEnabled,
+    Callback = function(state)
+        config.autoSpawnVehicleEnabled = state
+        UILibrary:Notify({
+            Title = "配置更新",
+            Text = "自动生成车辆: " .. (state and "开启"或"关闭"),
+            Duration = 5
+        })
+        saveConfig()
+        
+        if state then
+            spawn(function()
+                task.wait(0.5)
+                if performAutoSpawnVehicle and type(performAutoSpawnVehicle) == "function" then
+                    local success, err = pcall(performAutoSpawnVehicle)
+                    if not success then
+                        warn("[AutoSpawnVehicle] 手动触发生成失败:", err)
+                        UILibrary:Notify({
+                            Title = "自动刷车",
+                            Text = "生成失败: " .. tostring(err),
+                            Duration = 5
+                        })
+                    end
+                else
+                    UILibrary:Notify({
+                        Title = "自动刷车",
+                        Text = "函数未准备就绪",
+                        Duration = 5
+                    })
+                end
+            end)
+        end
+    end
+})
+
+local notifyTab, notifyContent = UILibrary:CreateTab(sidebar, titleLabel, mainPage, {
+    Text = "通知设置"
+})
+
+local webhookCard = UILibrary:CreateCard(notifyContent, { IsMultiElement = true })
+local webhookLabel = UILibrary:CreateLabel(webhookCard, {
+    Text = "Webhook 地址",
+})
+local webhookInput = UILibrary:CreateTextBox(webhookCard, {
+    PlaceholderText = "输入 Webhook 地址",
+    OnFocusLost = function(text)
+        if not text then return end
+        local oldUrl = config.webhookUrl
+        config.webhookUrl = text
+        if config.webhookUrl ~= "" and config.webhookUrl ~= oldUrl then
+            sendWelcomeMessage()
+        end
+        UILibrary:Notify({ Title = "Webhook 更新", Text = "Webhook 地址已保存", Duration = 5 })
+        saveConfig()
+    end
+})
+webhookInput.Text = config.webhookUrl
+debugLog("Webhook 输入框创建:", webhookInput.Parent and "已配置" or "无父对象")
+
+local currencyNotifyCard = UILibrary:CreateCard(notifyContent)
+local toggleCurrency = UILibrary:CreateToggle(currencyNotifyCard, {
+    Text = "监测金额变化",
+    DefaultState = config.notifyCash,
+    Callback = function(state)
+        if state and config.webhookUrl == "" then
+            UILibrary:Notify({ Title = "Webhook 错误", Text = "请先设置 Webhook 地址", Duration = 5 })
+            config.notifyCash = false
+            return
+        end
+        config.notifyCash = state
+        UILibrary:Notify({ Title = "配置更新", Text = "金额变化监测: " .. (state and "开启"或"关闭"), Duration = 5 })
+        saveConfig()
+    end
+})
+debugLog("金额监测开关创建:", toggleCurrency.Parent and "父对象存在" or "无父对象")
+
+local leaderboardNotifyCard = UILibrary:CreateCard(notifyContent)
+local toggleLeaderboard = UILibrary:CreateToggle(leaderboardNotifyCard, {
+    Text = "监测排行榜状态",
+    DefaultState = config.notifyLeaderboard,
+    Callback = function(state)
+        if state and config.webhookUrl == "" then
+            UILibrary:Notify({ Title = "Webhook 错误", Text = "请先设置 Webhook 地址", Duration = 5 })
+            config.notifyLeaderboard = false
+            return nil
+        end
+        config.notifyLeaderboard = state
+        UILibrary:Notify({ Title = "配置更新", Text = "排行榜状态监测: " .. (state and "开启"或"关闭"), Duration = 5 })
+        saveConfig()
+        return nil
+    end
+})
+debugLog("排行榜监测开关创建:", toggleLeaderboard and toggleLeaderboard.Parent and "父对象存在" or "无父对象")
+
+local leaderboardKickCard = UILibrary:CreateCard(notifyContent)
+local toggleLeaderboardKick = UILibrary:CreateToggle(leaderboardKickCard, {
+    Text = "上榜自动踢出",
+    DefaultState = config.leaderboardKick,
+    Callback = function(state)
+        if state and config.webhookUrl == "" then
+            UILibrary:Notify({ Title = "Webhook 错误", Text = "请先设置 Webhook 地址", Duration = 5 })
+            config.leaderboardKick = false
+            return nil
+        end
+        config.leaderboardKick = state
+        UILibrary:Notify({ Title = "配置更新", Text = "上榜自动踢出: " .. (state and "开启"或"关闭"), Duration = 5 })
+        saveConfig()
+        return nil
+    end
+})
+debugLog("上榜踢出开关创建:", toggleLeaderboardKick.Parent and "父对象存在" or "无父对象")
+
+local intervalCard = UILibrary:CreateCard(notifyContent, { IsMultiElement = true })
+local intervalLabel = UILibrary:CreateLabel(intervalCard, {
+    Text = "通知间隔（分钟）",
+})
+local intervalInput = UILibrary:CreateTextBox(intervalCard, {
+    PlaceholderText = "输入间隔时间",
+    OnFocusLost = function(text)
+        if not text then return end
+        local num = tonumber(text)
+        if num and num > 0 then
+            config.notificationInterval = num
+            UILibrary:Notify({ Title = "配置更新", Text = "通知间隔: " .. num .. " 分钟", Duration = 5 })
+            saveConfig()
+        else
+            intervalInput.Text = tostring(config.notificationInterval)
+            UILibrary:Notify({ Title = "配置错误", Text = "请输入有效的数字", Duration = 5 })
+        end
+    end
+})
+intervalInput.Text = tostring(config.notificationInterval)
+debugLog("通知间隔输入框创建:", intervalInput.Parent and "父对象存在" or "无父对象")
+
+local baseAmountCard = UILibrary:CreateCard(notifyContent, { IsMultiElement = true })
+
+UILibrary:CreateLabel(baseAmountCard, {
+    Text = "基准金额设置",
+})
+
+local targetAmountLabel
+
+debugLog("[配置检查] 当前配置中的baseAmount:", config.baseAmount)
+debugLog("[配置检查] 当前配置中的targetAmount:", config.targetAmount)
+
+local baseAmountInput = UILibrary:CreateTextBox(baseAmountCard, {
+    PlaceholderText = "输入基准金额",
+    OnFocusLost = function(text)
+        text = text and text:match("^%s*(.-)%s*$")
+        
+        debugLog("[输入处理] 原始输入文本:", text or "nil")
+        
+        if not text or text == "" then
+            config.baseAmount = 0
+            config.targetAmount = 0
+            baseAmountInput.Text = ""
+            if targetAmountLabel then
+                targetAmountLabel.Text = "目标金额: 未设置"
+            end
+            
+            saveConfig()
+            debugLog("[清空后] baseAmount保存为:", config.baseAmount)
+            debugLog("[清空后] targetAmount保存为:", config.targetAmount)
+            
+            UILibrary:Notify({
+                Title = "基准金额已清除",
+                Text = "基准金额和目标金额已重置",
+                Duration = 5
+            })
+            return
+        end
+
+        local cleanText = text:gsub(",", "")
+        local num = tonumber(cleanText)
+        
+        debugLog("[数字转换] 清理后的文本:", cleanText)
+        debugLog("[数字转换] 转换后的数字:", num)
+        
+        if num and num > 0 then
+            local currentCurrency = fetchCurrentCurrency() or 0
+            debugLog("[金额获取] 当前游戏金额:", currentCurrency)
+            
+            local newTarget = num + currentCurrency
+            debugLog("[计算前] 即将设置baseAmount为:", num)
+            debugLog("[计算前] 即将设置targetAmount为:", newTarget)
+            
+            config.baseAmount = num
+            config.targetAmount = newTarget
+            
+            debugLog("[赋值后] config.baseAmount:", config.baseAmount)
+            debugLog("[赋值后] config.targetAmount:", config.targetAmount)
+            
+            baseAmountInput.Text = formatNumber(num)
+            
+            if targetAmountLabel then
+                targetAmountLabel.Text = "目标金额: " .. formatNumber(newTarget)
+                debugLog("[标签更新] 目标金额标签已更新为:", formatNumber(newTarget))
+            end
+            
+            saveConfig()
+            
+            debugLog("[保存验证] 保存后config.baseAmount:", config.baseAmount)
+            debugLog("[保存验证] 保存后config.targetAmount:", config.targetAmount)
+            
+            if isfile(configFile) then
+                local success, result = pcall(function()
+                    local fileContent = HttpService:JSONDecode(readfile(configFile))
+                    return fileContent[username]
+                end)
+                if success and result then
+                    debugLog("[文件验证] 文件中的baseAmount:", result.baseAmount)
+                    debugLog("[文件验证] 文件中的targetAmount:", result.targetAmount)
+                else
+                    debugLog("[文件验证] 读取配置文件失败")
+                end
+            end
+            
+            UILibrary:Notify({
+                Title = "基准金额已设置",
+                Text = string.format("基准金额: %s\n当前金额: %s\n新目标金额: %s", 
+                    formatNumber(num), 
+                    formatNumber(currentCurrency),
+                    formatNumber(newTarget)),
+                Duration = 7
+            })
+            
+            if config.enableTargetKick and currentCurrency >= newTarget then
+                suppressTargetToggleCallback = true
+                targetAmountToggle:Set(false)
+                config.enableTargetKick = false
+                saveConfig()
+                UILibrary:Notify({
+                    Title = "自动关闭",
+                    Text = string.format("当前金额(%s)已达到目标(%s)，目标金额踢出功能已自动关闭",
+                        formatNumber(currentCurrency),
+                        formatNumber(newTarget)),
+                    Duration = 6
+                })
+            end
+        else
+            baseAmountInput.Text = tostring(config.baseAmount > 0 and formatNumber(config.baseAmount) or "")
+            UILibrary:Notify({
+                Title = "配置错误",
+                Text = "请输入有效的正整数作为基准金额",
+                Duration = 5
+            })
+        end
+    end
+})
+
+if config.baseAmount > 0 then
+    baseAmountInput.Text = formatNumber(config.baseAmount)
+else
+    baseAmountInput.Text = ""
+end
+
+debugLog("[初始化] 输入框初始值:", baseAmountInput.Text)
+
+local targetAmountCard = UILibrary:CreateCard(notifyContent, { IsMultiElement = true })
+
+local suppressTargetToggleCallback = false
+
+local targetAmountToggle = UILibrary:CreateToggle(targetAmountCard, {
+    Text = "目标金额踢出",
+    DefaultState = config.enableTargetKick or false,
+    Callback = function(state)
+        debugLog("[目标踢出] 状态改变:", state)
+
+        if suppressTargetToggleCallback then
+            suppressTargetToggleCallback = false
+            return
+        end
+
+        if state and config.webhookUrl == "" then
+            targetAmountToggle:Set(false)
+            UILibrary:Notify({ Title = "Webhook 错误", Text = "请先设置 Webhook 地址", Duration = 5 })
+            return
+        end
+
+        if state and (not config.targetAmount or config.targetAmount <= 0) then
+            targetAmountToggle:Set(false)
+            UILibrary:Notify({ Title = "配置错误", Text = "请先设置基准金额以生成目标金额", Duration = 5 })
+            return
+        end
+
+        local currentCurrency = fetchCurrentCurrency()
+        if state and currentCurrency and currentCurrency >= config.targetAmount then
+            targetAmountToggle:Set(false)
+            UILibrary:Notify({
+                Title = "配置警告",
+                Text = string.format("当前金额(%s)已超过目标(%s)，请重新设置基准金额",
+                    formatNumber(currentCurrency),
+                    formatNumber(config.targetAmount)
+                ),
+                Duration = 6
+            })
+            return
+        end
+
+        config.enableTargetKick = state
+        UILibrary:Notify({
+            Title = "配置更新",
+            Text = string.format("目标金额踢出: %s\n目标金额: %s", 
+                (state and "开启"或"关闭"),
+                config.targetAmount > 0 and formatNumber(config.targetAmount) or "未设置"),
+            Duration = 5
+        })
+        saveConfig()
+    end
+})
+
+targetAmountLabel = UILibrary:CreateLabel(targetAmountCard, {
+    Text = "目标金额: " .. (config.targetAmount > 0 and formatNumber(config.targetAmount) or "未设置"),
+})
+
+debugLog("[标签初始化] 目标金额标签初始文本:", targetAmountLabel.Text)
+
+UILibrary:CreateButton(targetAmountCard, {
+    Text = "重新计算目标金额",
+    Callback = function()
+        if config.baseAmount <= 0 then
+            UILibrary:Notify({
+                Title = "配置错误",
+                Text = "请先设置基准金额",
+                Duration = 5
+            })
+            return
+        end
+        
+        local currentCurrency = fetchCurrentCurrency() or 0
+        local oldTarget = config.targetAmount
+        local newTarget = config.baseAmount + currentCurrency
+        
+        debugLog("[重新计算] 使用基准金额:", config.baseAmount)
+        debugLog("[重新计算] 当前游戏金额:", currentCurrency)
+        debugLog("[重新计算] 计算的新目标:", newTarget)
+        debugLog("[重新计算] 旧目标金额:", oldTarget)
+        
+        if newTarget <= currentCurrency then
+            UILibrary:Notify({
+                Title = "计算错误",
+                Text = string.format("计算后的目标金额(%s)不能小于等于当前金额(%s)，请检查基准金额设置", 
+                    formatNumber(newTarget), formatNumber(currentCurrency)),
+                Duration = 6
+            })
+            return
+        end
+        
+        config.targetAmount = newTarget
+        
+        if targetAmountLabel then
+            targetAmountLabel.Text = "目标金额: " .. formatNumber(newTarget)
+        end
+        
+        saveConfig()
+        
+        debugLog("[重新计算保存后] config.targetAmount:", config.targetAmount)
+        
+        UILibrary:Notify({
+            Title = "目标金额已重新计算",
+            Text = string.format("基准金额: %s\n当前金额: %s\n新目标金额: %s", 
+                formatNumber(config.baseAmount),
+                formatNumber(currentCurrency),
+                formatNumber(newTarget)),
+            Duration = 7
+        })
+        
+        if config.enableTargetKick and currentCurrency >= newTarget then
+            suppressTargetToggleCallback = true
+            targetAmountToggle:Set(false)
+            config.enableTargetKick = false
+            saveConfig()
+            UILibrary:Notify({
+                Title = "自动关闭",
+                Text = string.format("当前金额(%s)已达到目标(%s)，目标金额踢出功能已自动关闭",
+                    formatNumber(currentCurrency),
+                    formatNumber(newTarget)),
+                Duration = 6
+            })
+        end
+    end
+})
+
+function updateTargetAmountDisplay()
+    if config.baseAmount > 0 then
+        local currentCurrency = fetchCurrentCurrency() or 0
+        local newTarget = config.baseAmount + currentCurrency
+        
+        config.targetAmount = newTarget
+        
+        if targetAmountLabel then
+            targetAmountLabel.Text = "目标金额: " .. formatNumber(newTarget)
+        end
+        
+        saveConfig()
+        
+        debugLog("[实时更新] 目标金额已更新为:", newTarget)
+    end
+end
+
+local aboutTab, aboutContent = UILibrary:CreateTab(sidebar, titleLabel, mainPage, {
+    Text = "关于"
+})
+
+local authorInfo = UILibrary:CreateAuthorInfo(aboutContent, {
+    Text = "作者: Lin",
+    SocialText = "感谢使用"
+})
+
+UILibrary:CreateButton(aboutContent, {
+    Text = "复制 Discord",
+    Callback = function()
+        local link = "https://discord.gg/j20v0eWU8u"
+        if setclipboard and type(link) == "string" then
+            setclipboard(link)
+            UILibrary:Notify({
+                Title = "已复制",
+                Text = "Discord 链接已复制到剪贴板",
+                Duration = 2,
+            })
+        else
+            UILibrary:Notify({
+                Title = "复制失败",
+                Text = "无法访问剪贴板功能",
+                Duration = 2,
+            })
+        end
+    end,
+})
+
+if config.webhookUrl ~= "" then
+    sendWelcomeMessage()
+end
+
+local unchangedCount = 0
+local webhookDisabled = false
+local startTime = os.time()
+local lastSendTime = os.time()
+local lastCurrency = nil
+
+local checkInterval = 1
+
+local player = game.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+
+local Players = game:GetService("Players")
+local GuiService = game:GetService("GuiService")
+local NetworkClient = game:GetService("NetworkClient")
+
+local player = Players.LocalPlayer
+local disconnected = false
+
+NetworkClient.ChildRemoved:Connect(function()
+	if not disconnected then
+		warn("[掉线检测] 网络断开")
+		disconnected = true
+	end
+end)
+
+GuiService.ErrorMessageChanged:Connect(function(msg)
+	if msg and msg ~= "" and not disconnected then
+		warn("[掉线检测] 错误提示：" .. msg)
+		disconnected = true
+	end
+end)
+
+local function formatElapsedTime(seconds)
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    local secs = seconds % 60
+    return string.format("%02d小时%02d分%02d秒", hours, minutes, secs)
+end
+
+local function updateLastSavedCurrency(currentCurrency)
+    if currentCurrency and currentCurrency ~= config.lastSavedCurrency then
+        config.lastSavedCurrency = currentCurrency
+        saveConfig()
+    end
+end
+
+local function updateLastNotifyCurrency(currentCurrency)
+    if currentCurrency then
+        config.lastNotifyCurrency = currentCurrency
+        saveConfig()
+    end
+end
+
+local lastNotifyCurrency = nil
+
+while true do
+    local currentTime = os.time()
+    local currentCurrency = fetchCurrentCurrency()
+
+    local earnedAmount = calculateEarnedAmount(currentCurrency)
+    earnedCurrencyLabel.Text = "已赚金额: " .. formatNumber(earnedAmount)
+
+    local shouldShutdown = false
+
+    if config.enableTargetKick and currentCurrency and config.targetAmount > 0 then
+        debugLog("[目标检测] 当前金额:", currentCurrency)
+        debugLog("[目标检测] 目标金额:", config.targetAmount) 
+        
+        if currentCurrency >= config.targetAmount then
+            local payload = {
+                embeds = {{
+                    title = "🎯 目标金额达成",
+                    description = string.format(
+                        "**游戏**: %s\n**用户**: %s\n**当前金额**: %s\n**目标金额**: %s\n**基准金额**: %s\n**运行时长**: %s",
+                        gameName, username,
+                        formatNumber(currentCurrency),
+                        formatNumber(config.targetAmount),
+                        formatNumber(config.baseAmount),
+                        formatElapsedTime(currentTime - startTime)
+                    ),
+                    color = PRIMARY_COLOR,
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    footer = { text = "作者: Lin · Moon-X" }
+                }}
+            }
+
+            UILibrary:Notify({
+                Title = "🎯 目标达成",
+                Text = string.format("已达到目标金额 %s，准备退出游戏...", formatNumber(config.targetAmount)),
+                Duration = 10
+            })
+            
+            if config.webhookUrl ~= "" and not webhookDisabled then
+                dispatchWebhook(payload)
+            end
+            
+            updateLastSavedCurrency(currentCurrency)
+            config.enableTargetKick = false
+            saveConfig()
+            
+            wait(3)
+            pcall(function() game:Shutdown() end)
+            pcall(function() player:Kick("目标金额已达成，游戏自动退出") end)
+            return
+        end
+    end
+
+    if disconnected and not webhookDisabled then
+        webhookDisabled = true
+        dispatchWebhook({
+            embeds = {{
+                title = "⚠️ 掉线检测",
+                description = string.format(
+                    "**游戏**: %s\n**用户**: %s\n**当前金额**: %s\n检测到玩家掉线，请查看",
+                    gameName, username, formatNumber(currentCurrency or 0)),
+                color = 16753920,
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                footer = { text = "作者: Lin · Moon-X" }
+            }}
+        })
+        UILibrary:Notify({
+            Title = "掉线检测",
+            Text = "检测到玩家连接异常，已停止发送 Webhook",
+            Duration = 5
+        })
+    end
+
+    local interval = currentTime - lastSendTime
+    if not webhookDisabled and (config.notifyCash or config.notifyLeaderboard or config.leaderboardKick)
+       and interval >= getNotificationIntervalSeconds() then
+
+        local earnedChange = calculateChangeAmount(currentCurrency)
+        
+        debugLog("[金额统计] 当前金额:", currentCurrency or "nil")
+        debugLog("[金额统计] 总收益基准:", config.totalEarningsBase)
+        debugLog("[金额统计] 上次通知金额:", config.lastNotifyCurrency)
+        debugLog("[金额统计] 本次变化:", earnedChange)
+        debugLog("[金额统计] 总计收益:", earnedAmount)
+
+        if currentCurrency == lastCurrency and earnedChange == 0 then
+            unchangedCount = unchangedCount + 1
+        else
+            unchangedCount = 0
+        end
+
+        if unchangedCount >= 2 then
+            local webhookSuccess = dispatchWebhook({
+                embeds = {{
+                    title = "⚠️ 金额长时间未变化",
+                    description = string.format(
+                        "**游戏**: %s\n**用户**: %s\n**当前金额**: %s\n检测到连续两次金额变化为 0，可能已断开或数据异常",
+                        gameName, username, formatNumber(currentCurrency or 0)),
+                    color = 16753920,
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    footer = { text = "作者: Lin · Moon-X" }
+                }}
+            })
+
+            if webhookSuccess then
+                webhookDisabled = true
+                lastSendTime = currentTime
+                lastCurrency = currentCurrency
+                updateLastNotifyCurrency(currentCurrency)
+                updateLastSavedCurrency(currentCurrency)
+                UILibrary:Notify({
+                    Title = "连接异常",
+                    Text = "检测到金额连续两次未变化，已停止发送 Webhook",
+                    Duration = 5
+                })
+            end
+        else
+            local nextNotifyTimestamp = currentTime + getNotificationIntervalSeconds()
+            local countdownR = string.format("<t:%d:R>", nextNotifyTimestamp)
+            local countdownT = string.format("<t:%d:T>", nextNotifyTimestamp)
+
+            local embed = {
+                title = "Moon-X",
+                description = string.format("**游戏**: %s\n**用户**: %s", gameName, username),
+                fields = {},
+                color = PRIMARY_COLOR,
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                footer = { text = "作者: Lin · Moon-X" }
+            }
+
+            if config.notifyCash and currentCurrency then
+                local elapsedTime = currentTime - startTime
+                local avgMoney = "0"
+                if elapsedTime > 0 then
+                    local rawAvg = earnedAmount / (elapsedTime / 3600)
+                    avgMoney = formatNumber(math.floor(rawAvg + 0.5))
+                end
+
+                table.insert(embed.fields, {
+                    name = "💰金额通知",
+                    value = string.format(
+                        "**用户名**: %s\n**已运行时间**: %s\n**当前金额**: %s\n**本次变化**: %s%s\n**总计收益**: %s%s\n**平均速度**: %s /小时",
+                        username,
+                        formatElapsedTime(elapsedTime),
+                        formatNumber(currentCurrency),
+                        (earnedChange >= 0 and "+" or ""), formatNumber(earnedChange),
+                        (earnedAmount >= 0 and "+" or ""), formatNumber(earnedAmount),
+                        avgMoney
+                    ),
+                    inline = false
+                })
+            end
+
+            if config.notifyLeaderboard or config.leaderboardKick then
+                local currentRank, isOnLeaderboard = fetchPlayerRank()
+                local status = isOnLeaderboard and ("#" .. (currentRank or "未知")) or "未上榜"
+                table.insert(embed.fields, {
+                    name = "🏆 排行榜",
+                    value = string.format("**当前排名**: %s", status),
+                    inline = true
+                })
+
+                UILibrary:Notify({
+                    Title = "排行榜检测",
+                    Text = isOnLeaderboard and ("当前排名 " .. status .. "，已上榜") or "当前未上榜",
+                    Duration = 5
+                })
+
+                if isOnLeaderboard and config.leaderboardKick then
+                    shouldShutdown = true
+                end
+            end
+
+            table.insert(embed.fields, {
+                name = "⌛ 下次通知",
+                value = string.format("%s（%s）", countdownR, countdownT),
+                inline = false
+            })
+
+            local webhookSuccess = dispatchWebhook({ embeds = { embed } })
+            if webhookSuccess then
+                lastSendTime = currentTime
+                lastCurrency = currentCurrency
+                updateLastNotifyCurrency(currentCurrency)
+                updateLastSavedCurrency(currentCurrency)
+                UILibrary:Notify({
+                    Title = "定时通知",
+                    Text = "Webhook 已发送，下次时间: " .. os.date("%Y-%m-%d %H:%M:%S", nextNotifyTimestamp),
+                    Duration = 5
+                })
+
+                if shouldShutdown then
+                    updateLastSavedCurrency(currentCurrency)
+                    wait(0.5)
+                    game:Shutdown()
+                    return
+                end
+            else
+                UILibrary:Notify({
+                    Title = "Webhook 发送失败",
+                    Text = "请检查 Webhook 设置",
+                    Duration = 5
+                })
+            end
+        end
+    end
+
+    wait(checkInterval)
+end`;
+
+  res.setHeader('Content-Type', 'text/plain');
+  res.status(200).send(luaScript);
+};
