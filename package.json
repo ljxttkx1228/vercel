@@ -1,12 +1,9 @@
 {
-  "name": "yima-vercel-app",
+  "name": "moon-script-website",
   "version": "1.0.0",
-  "main": "api/addAuth.js",
-  "type": "module",
+  "description": "Moon脚本官方网站",
   "scripts": {
-    "start": "node api/addAuth.js"
-  },
-  "dependencies": {
-    "node-fetch": "^3.3.2"
+    "dev": "echo 'No build process needed'",
+    "build": "echo 'Static HTML site - no build needed'"
   }
 }
