@@ -1373,11 +1373,87 @@
     </footer>
 
     <script>
-        // Supabase初始化
+        // ========== 第一部分：Supabase初始化 ==========
         const supabaseUrl = 'https://trncyvtesnzjkawvthai.supabase.co';
         const supabaseKey = 'sb_publishable_o3pMFvRAbgEZkBaDF1K4SA_mJJqw_tH';
         const supabase = supabase.createClient(supabaseUrl, supabaseKey);
+        console.log('Supabase客户端已初始化');
 
+        // ========== 第二部分：登录系统功能 ==========
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM加载完成，开始初始化登录系统...');
+            
+            // 检查登录按钮
+            const loginBtn = document.getElementById('login-btn');
+            console.log('登录按钮:', loginBtn);
+            
+            if (loginBtn) {
+                loginBtn.addEventListener('click', function(e) {
+                    console.log('登录按钮被点击');
+                    e.preventDefault();
+                    document.getElementById('auth-modal').style.display = 'block';
+                });
+            }
+            
+            // 关闭登录模态框
+            document.getElementById('close-auth').addEventListener('click', function() {
+                document.getElementById('auth-modal').style.display = 'none';
+            });
+            
+            // 点击模态框背景关闭
+            document.getElementById('auth-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.style.display = 'none';
+                }
+            });
+            
+            // 登录/注册标签切换
+            document.querySelectorAll('.auth-tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabName = this.getAttribute('data-tab');
+                    
+                    document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    document.querySelectorAll('.auth-form').forEach(form => form.classList.remove('active'));
+                    document.getElementById(tabName + '-form').classList.add('active');
+                });
+            });
+            
+            // 登录表单提交
+            document.getElementById('login-form').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                await handleLogin();
+            });
+            
+            // 注册表单提交
+            document.getElementById('register-form').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                await handleRegister();
+            });
+            
+            // 用户菜单切换
+            document.getElementById('user-avatar').addEventListener('click', function() {
+                document.getElementById('user-dropdown').classList.toggle('active');
+            });
+            
+            // 退出登录
+            document.getElementById('logout-btn').addEventListener('click', async function() {
+                await handleLogout();
+            });
+            
+            // 点击其他地方关闭用户菜单
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.user-menu')) {
+                    document.getElementById('user-dropdown').classList.remove('active');
+                }
+            });
+            
+            // 检查用户登录状态
+            checkAuthState();
+        });
+
+        // ========== 第三部分：其他现有功能 ==========
         // 语言切换功能
         let currentLanguage = 'zh';
         const languageToggle = document.getElementById('languageToggle');
@@ -1545,74 +1621,7 @@
         // 观察统计区域
         observer.observe(document.querySelector('.stats'));
 
-        // 登录系统功能
-        document.addEventListener('DOMContentLoaded', function() {
-            // 检查用户登录状态
-            checkAuthState();
-            
-            // 登录按钮点击事件
-            document.getElementById('login-btn').addEventListener('click', function(e) {
-                e.preventDefault();
-                document.getElementById('auth-modal').style.display = 'block';
-            });
-            
-            // 关闭登录模态框
-            document.getElementById('close-auth').addEventListener('click', function() {
-                document.getElementById('auth-modal').style.display = 'none';
-            });
-            
-            // 点击模态框背景关闭
-            document.getElementById('auth-modal').addEventListener('click', function(e) {
-                if (e.target === this) {
-                    this.style.display = 'none';
-                }
-            });
-            
-            // 登录/注册标签切换
-            document.querySelectorAll('.auth-tab').forEach(tab => {
-                tab.addEventListener('click', function() {
-                    const tabName = this.getAttribute('data-tab');
-                    
-                    // 更新活跃标签
-                    document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
-                    this.classList.add('active');
-                    
-                    // 显示对应表单
-                    document.querySelectorAll('.auth-form').forEach(form => form.classList.remove('active'));
-                    document.getElementById(tabName + '-form').classList.add('active');
-                });
-            });
-            
-            // 登录表单提交
-            document.getElementById('login-form').addEventListener('submit', async function(e) {
-                e.preventDefault();
-                await handleLogin();
-            });
-            
-            // 注册表单提交
-            document.getElementById('register-form').addEventListener('submit', async function(e) {
-                e.preventDefault();
-                await handleRegister();
-            });
-            
-            // 用户菜单切换
-            document.getElementById('user-avatar').addEventListener('click', function() {
-                document.getElementById('user-dropdown').classList.toggle('active');
-            });
-            
-            // 退出登录
-            document.getElementById('logout-btn').addEventListener('click', async function() {
-                await handleLogout();
-            });
-            
-            // 点击其他地方关闭用户菜单
-            document.addEventListener('click', function(e) {
-                if (!e.target.closest('.user-menu')) {
-                    document.getElementById('user-dropdown').classList.remove('active');
-                }
-            });
-        });
-
+        // ========== 第四部分：登录系统功能函数 ==========
         // 检查认证状态
         async function checkAuthState() {
             const { data: { session } } = await supabase.auth.getSession();
