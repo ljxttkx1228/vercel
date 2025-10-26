@@ -2,17 +2,47 @@
   "version": 2,
   "builds": [
     {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "index.html",
       "use": "@vercel/static"
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "/api/$1.js",
+      "methods": ["GET", "POST", "OPTIONS"]
+    },
+    {
       "src": "/(.*)",
       "dest": "/index.html"
     }
   ],
   "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type, Authorization, X-Requested-With"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
     {
       "source": "/(.*)",
       "headers": [
@@ -34,7 +64,7 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/font-awesome/ https://cdn.jsdelivr.net/ https://discord.com/ https://www.roblox.com/; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/font-awesome/; font-src 'self' https://cdnjs.cloudflare.com/ajax/libs/font-awesome/; img-src 'self' data: https:; connect-src 'self' https://discord.com/ https://trncyvtesnzjkawvthai.supabase.co/; frame-src https://discord.com/;"
+          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/font-awesome/ https://cdn.jsdelivr.net/ https://discord.com/ https://www.roblox.com/; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/font-awesome/; font-src 'self' https://cdnjs.cloudflare.com/ajax/libs/font-awesome/; img-src 'self' data: https:; connect-src 'self' https://discord.com/ https://trncyvtesnzjkawvthai.supabase.co/ https://*.supabase.co; frame-src https://discord.com/;"
         }
       ]
     },
@@ -53,8 +83,9 @@
   },
   "regions": ["hkg1"],
   "functions": {
-    "index.html": {
-      "maxDuration": 10
+    "api/**/*.js": {
+      "maxDuration": 30,
+      "memory": 1024
     }
   }
 }
