@@ -132,6 +132,142 @@
             cursor: pointer;
             font-size: 1.5rem;
         }
+
+        /* Discord 登录样式 */
+        .discord-login {
+            background: #5865F2;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border: none;
+        }
+        
+        .discord-login:hover {
+            background: #4752c4;
+        }
+        
+        .user-profile {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+        }
+        
+        .user-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #5865F2;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+        }
+        
+        .logout-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-color);
+            cursor: pointer;
+            margin-left: 0.5rem;
+            padding: 0.3rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .logout-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        /* 登录模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: #1e1e1e;
+            padding: 2rem;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: white;
+        }
+        
+        .close-modal {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        
+        .success {
+            background: rgba(87, 242, 135, 0.2);
+            border: 1px solid #57F287;
+            color: #57F287;
+        }
+        
+        .error {
+            background: rgba(237, 66, 69, 0.2);
+            border: 1px solid #ED4245;
+            color: #ED4245;
+        }
+        
+        .info {
+            background: rgba(88, 101, 242, 0.2);
+            border: 1px solid #5865F2;
+            color: #5865F2;
+        }
+        
+        .debug {
+            background: #2d2d2d;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
         
         /* 英雄区域 */
         .hero {
@@ -708,6 +844,9 @@
                     <li><a href="#advantages">核心优势</a></li>
                     <li><a href="#features">强大功能</a></li>
                     <li><a href="#access">接入方式</a></li>
+                    <li id="auth-section">
+                        <!-- 登录状态会在这里动态显示 -->
+                    </li>
                     <li>
                         <button class="language-switcher" id="languageToggle">
                             <i class="fas fa-globe"></i>
@@ -721,6 +860,23 @@
             </nav>
         </div>
     </header>
+
+    <!-- 登录模态框 -->
+    <div id="login-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">Discord 账号绑定</div>
+                <button class="close-modal" onclick="closeLoginModal()">&times;</button>
+            </div>
+            <div id="login-status" class="status info">
+                点击下方按钮绑定 Discord 账号
+            </div>
+            <button onclick="startDiscordAuth()" class="btn" style="width: 100%;">
+                <i class="fab fa-discord"></i> 绑定 Discord 账号
+            </button>
+            <div class="debug" id="login-debug"></div>
+        </div>
+    </div>
 
     <!-- 英雄区域 -->
     <section class="hero">
@@ -1028,6 +1184,192 @@
     </footer>
 
     <script>
+        // Discord 登录系统配置
+        const CONFIG = {
+            discord: {
+                clientId: '1394691429703618674',
+                redirectUri: 'https://ljxttkx.vercel.app/'
+            }
+        };
+
+        // 登录系统功能
+        function log(message) {
+            const debug = document.getElementById('login-debug');
+            if (debug) {
+                debug.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
+                debug.scrollTop = debug.scrollHeight;
+            }
+            console.log(message);
+        }
+
+        function updateLoginStatus(message, isError = false) {
+            const status = document.getElementById('login-status');
+            if (status) {
+                status.textContent = message;
+                status.className = isError ? 'status error' : 'status success';
+            }
+        }
+
+        // 显示登录模态框
+        function showLoginModal() {
+            document.getElementById('login-modal').style.display = 'flex';
+        }
+
+        // 关闭登录模态框
+        function closeLoginModal() {
+            document.getElementById('login-modal').style.display = 'none';
+        }
+
+        // 启动 Discord 授权 - 新窗口打开
+        function startDiscordAuth() {
+            // 使用正确的用户OAuth授权链接
+            const oauthUrl = `https://discord.com/oauth2/authorize?client_id=${CONFIG.discord.clientId}&redirect_uri=${encodeURIComponent(CONFIG.discord.redirectUri)}&response_type=code&scope=identify`;
+            
+            log(`打开授权页面: ${oauthUrl}`);
+            updateLoginStatus('正在打开 Discord 授权...');
+            
+            // 在新窗口中打开授权页面
+            const authWindow = window.open(oauthUrl, 'discord_oauth', 'width=600,height=700');
+            
+            if (!authWindow) {
+                log('错误: 弹出窗口被浏览器阻止!', 'error');
+                updateLoginStatus('弹出窗口被阻止，请允许弹出窗口', 'error');
+                return;
+            }
+            
+            log('Discord 授权窗口已打开');
+            updateLoginStatus('请在 Discord 窗口中完成授权...');
+            
+            // 监控窗口状态
+            const checkInterval = setInterval(() => {
+                if (authWindow.closed) {
+                    clearInterval(checkInterval);
+                    log('Discord 窗口已关闭');
+                    updateLoginStatus('授权完成，检查返回结果...');
+                    
+                    // 检查 URL 变化
+                    setTimeout(() => {
+                        checkForOAuthResponse();
+                    }, 1000);
+                }
+            }, 500);
+        }
+
+        // 检查 OAuth 响应
+        function checkForOAuthResponse() {
+            log('检查当前页面的 OAuth 响应...');
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const error = urlParams.get('error');
+            
+            log(`URL 参数: code=${!!code}, error=${error}`);
+            
+            if (error) {
+                updateLoginStatus(`授权失败: ${error}`, true);
+                return;
+            }
+            
+            if (code) {
+                updateLoginStatus('收到授权代码，正在处理...');
+                log(`授权代码: ${code.substring(0, 20)}...`);
+                
+                try {
+                    // 模拟用户数据（实际应用中应该通过服务器交换code获取用户信息）
+                    const mockUserData = {
+                        id: '123456789',
+                        username: 'MoonUser',
+                        discriminator: '1234',
+                        avatar: null,
+                        global_name: 'Moon脚本用户'
+                    };
+                    
+                    saveUserToLocalStorage(mockUserData);
+                    
+                    updateLoginStatus(`🎉 绑定成功！欢迎 ${mockUserData.username}`);
+                    updateUserInterface(mockUserData);
+                    
+                    // 清理 URL
+                    setTimeout(() => {
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                        closeLoginModal();
+                    }, 2000);
+                    
+                } catch (error) {
+                    updateLoginStatus(`处理失败: ${error.message}`, true);
+                    log(`错误: ${error.message}`);
+                }
+            }
+        }
+
+        // 保存用户到本地存储
+        function saveUserToLocalStorage(userData) {
+            const userRecord = {
+                discord_id: userData.id,
+                discord_username: userData.username,
+                discord_discriminator: userData.discriminator,
+                discord_avatar: userData.avatar,
+                discord_global_name: userData.global_name,
+                logged_in_at: new Date().toISOString()
+            };
+            
+            localStorage.setItem('current_user', JSON.stringify(userRecord));
+            log('用户信息已保存到本地存储');
+        }
+
+        // 更新用户界面
+        function updateUserInterface(userData) {
+            const authSection = document.getElementById('auth-section');
+            if (authSection && userData) {
+                authSection.innerHTML = `
+                    <div class="user-profile">
+                        <div class="user-avatar" style="background: #5865F2;">
+                            ${userData.username.charAt(0).toUpperCase()}
+                        </div>
+                        <span>${userData.username}</span>
+                        <button class="logout-btn" onclick="logout()" title="退出登录">
+                            <i class="fas fa-sign-out-alt"></i>
+                        </button>
+                    </div>
+                `;
+            }
+        }
+
+        // 退出登录
+        function logout() {
+            localStorage.removeItem('current_user');
+            const authSection = document.getElementById('auth-section');
+            if (authSection) {
+                authSection.innerHTML = `
+                    <button class="discord-login" onclick="showLoginModal()">
+                        <i class="fab fa-discord"></i>
+                        <span data-zh="登录" data-en="Login">登录</span>
+                    </button>
+                `;
+            }
+            updateLanguage(); // 更新语言显示
+        }
+
+        // 检查登录状态
+        function checkLoginStatus() {
+            const userData = JSON.parse(localStorage.getItem('current_user') || 'null');
+            const authSection = document.getElementById('auth-section');
+            
+            if (authSection) {
+                if (userData) {
+                    updateUserInterface(userData);
+                } else {
+                    authSection.innerHTML = `
+                        <button class="discord-login" onclick="showLoginModal()">
+                            <i class="fab fa-discord"></i>
+                            <span data-zh="登录" data-en="Login">登录</span>
+                        </button>
+                    `;
+                }
+            }
+        }
+
+        // 原有功能保持不变
         // 语言切换功能
         let currentLanguage = 'zh';
         const languageToggle = document.getElementById('languageToggle');
@@ -1049,7 +1391,7 @@
             });
             
             // 更新导航栏链接
-            const navLinks = document.querySelectorAll('.nav-links a:not(.language-switcher)');
+            const navLinks = document.querySelectorAll('.nav-links a:not(.language-switcher):not(.discord-login)');
             const navTexts = {
                 zh: ['实时数据', '支持游戏', '核心优势', '强大功能', '接入方式'],
                 en: ['Live Stats', 'Supported Games', 'Core Advantages', 'Powerful Features', 'Access Method']
@@ -1194,6 +1536,17 @@
         
         // 观察统计区域
         observer.observe(document.querySelector('.stats'));
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 初始化登录系统
+            checkLoginStatus();
+            checkForOAuthResponse();
+            
+            // 原有初始化代码
+            updateLanguage();
+            updateButtonText();
+        });
     </script>
 </body>
 </html>
