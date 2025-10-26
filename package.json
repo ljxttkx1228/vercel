@@ -3,7 +3,16 @@
   "version": "1.0.0",
   "description": "Moon脚本官方网站",
   "scripts": {
-    "dev": "echo 'No build process needed'",
+    "dev": "vercel dev",
     "build": "echo 'Static HTML site - no build needed'"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.38.0"
+  },
+  "devDependencies": {
+    "vercel": "^32.5.0"
+  },
+  "engines": {
+    "node": ">=18.x"
   }
 }
